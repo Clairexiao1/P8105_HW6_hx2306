@@ -1,0 +1,212 @@
+---
+title: "P8105_HW_hx2306"
+author: "HuijunXiao"
+date: "12/4/2021"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(modelr)
+library(p8105.datasets)
+library(viridis)
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))  
+```
+        
+### Problem 1   
+    
+Load and clean the data for regression analysis.   
+     
+```{r}
+btweight <-
+  read_csv("./data/birthweight.csv")%>%
+  janitor::clean_names() %>%
+  mutate(babysex = factor(babysex),
+         frace = factor(frace),
+         mrace = factor(mrace),
+         malform = factor(malform)) 
+
+sum(is.na(btweight))
+```
+**There is no missing data.**    
+     
+Propose a regression model for birthweight.   
+1. Use stepwise regression to see what variables can be fitted in to the final model.         
+```{r, eval=FALSE}
+step_fit <-
+  lm(bwt ~ ., data = btweight)
+
+step(step_fit, direction = "backward")
+```
+       
+From the last step of stepwise regression, we find that `babysex`, `bhead`, `blength`, `delwt`, `fincome`, `gaweeks`,  `mheight`, `mrace`, `parity`, `ppwt`, `smoken` are all related to `bwt`. Therefore, we applied all these variables into the preliminary model. 
+        
+```{r}
+model_step <- 
+  lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + mheight + mrace + parity + ppwt + smoken, data = btweight)
+summary(model_step)
+```
+      
+From the summary of our model, we found that family monthly income `fincome` and mother’s race `mrace3` is not significant, which means their association with the outcome may be very weak and, therefore, should not be included in to the final model. We also removed baby’s head circumference at birth `bhead` and baby’s length at birth `blength` from the model since it is possible that they overlap with the outcome. However, removing them leaded to that number of live births prior to this pregnancy `parity` became insignificant, which was removed finally as well.     
+
+```{r}
+model_new <-
+  lm(bwt ~ babysex + delwt + gaweeks + mheight + ppwt + smoken, data = btweight)
+summary(model_new)
+```
+       
+Show a plot of model residuals against fitted values.    
+     
+```{r}
+model_plot <-
+  btweight %>%
+  add_residuals(model_new) %>%
+   add_predictions(model_new) %>%
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  labs(title = "Plot of Model Residuals Against Fitted Values", 
+       x = "Fitted Values",
+       y = "Residuals")
+model_plot
+```
+        
+Based on our plot of model residuals against fitted values, the direct relationship between the predictor and residuals is not very clear.     
+       
+Compare your model to two others:     
+       
+1. One using length at birth and gestational age as predictors (main effects only)     
+      
+```{r}
+model2 <- lm(bwt ~ blength + gaweeks, data = btweight)
+summary(model2)
+```
+     
+2. One using head circumference, length, sex, and all interactions (including the three-way interaction) between these     
+    
+```{r}
+model3 <-
+  lm(bwt ~ blength + bhead + babysex 
+     + blength*bhead + blength* babysex + bhead*babysex + blength*bhead*babysex, 
+     data = btweight)
+summary(model3)
+```
+      
+Make this comparison in terms of the cross-validated prediction error.    
+     
+```{r, warning=FALSE}
+cross_vali <- 
+  crossv_mc(btweight, 100) %>% 
+    mutate(train = map(train, as.tibble),
+           test = map(test,as.tibble))  %>%
+  mutate(model_new  = map(train, ~lm(bwt ~ babysex + delwt + gaweeks + mheight + ppwt + smoken, data = btweight)),
+         model2  = map(train, ~lm(bwt ~ blength + gaweeks, data = btweight)),
+         model3  = map(train, ~lm(bwt ~ blength + bhead + babysex + blength*bhead + blength* babysex + bhead*babysex + blength*bhead*babysex, data = btweight))) %>% 
+  mutate(rmse_newm = map2_dbl(model_new, test, ~rmse(model = .x, data = .y)),
+         rmse_m2 = map2_dbl(model2 , test, ~rmse(model = .x, data = .y)),
+         rmse_m3 = map2_dbl(model3, test, ~rmse(model = .x, data = .y))) 
+
+cross_vali %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_violin()
+```
+      
+Based on three violin plots, we found that model 3 `m3` has the lowest rmse value, which means its prediction accuracy of linear regression model is better than model 2 `m2` and our model `newm`. Therefore, we should select model 3 as our final model.    
+    
+### Problem 2   
+       
+Download the dataset for 2017 Central Park weather data.       
+```{r, message=FALSE, warning=FALSE}
+weather_df <- 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+        
+Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities : $\hat r^2$ and $log(\hat \beta_0*\hat \beta_1)$.      
+     
+```{r, warning=FALSE}
+btweight_boots <-
+  weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+         rsquare = map(models, broom::glance),
+         results = map(models, broom::tidy)) %>% 
+  select(-strap, -models) %>% 
+  unnest(rsquare, results) %>% 
+  select(term,estimate, r.squared) %>%
+  mutate(term = str_replace(term, "\\(Intercept\\)","Intercept")) %>%
+  pivot_wider(names_from = term,
+              values_from = estimate) %>%
+  mutate(log = log(Intercept*tmin)) %>%
+  select(r.squared, log)  
+```
+       
+1. $\hat r^2$    
+      
+```{r}
+btweight_boots %>%
+  summarise(mean = mean(r.squared),
+            lower = quantile(r.squared, 0.025),
+            upper = quantile(r.squared, 0.975)) 
+``` 
+     
+```{r}
+plot_boots_r <- 
+  btweight_boots%>%
+  ggplot(aes(x = r.squared)) +
+  geom_density()+
+  labs(title = "Distribution of R.Squared", x = "R.Squared")
+
+plot_boots_r
+```
+      
+From distribution of r.squared plot, we can see it is close to normal distribution, although there is a little bit left-skewed. R.squared mean = 0.91, with 95% CI = (0.89,	0.93).    	
+     
+2. $log(\hat \beta_0*\hat \beta_1)$  
+       
+```{r, warning=FALSE}
+btweight_boots %>%
+  summarise(mean = mean(log),
+            lower = quantile(log,0.025),
+            upper = quantile(log, 0.975)) 
+```
+      
+```{r}
+plot_boots_log <- 
+  btweight_boots%>%
+  ggplot(aes(x = log)) +
+  geom_density()+
+  labs(title = "Distribution of Log Estimates", x = "Log Estimates")
+
+plot_boots_log
+```
+      
+From distribution pf log estimates plot, we can see it is close to normal distribution, although there is a little bit left-skewed. Based on the shape, it is possible that we have outliers. Log estimates mean = 2.01, with 95% CI = (1.97,	2.05).    	      
+     
